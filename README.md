@@ -1,4 +1,5 @@
 ## Classification Prediction Problem
+Competition between spring 2024 data science cohort. Ranking: 9th/1,856 models
 
 ## Overview 
 Predict Chicago Airbnb superhosts as of December 2023 based off of listing, host, and Airbnb characteristics in a Kaggle Competition for STAT 301-3.  
