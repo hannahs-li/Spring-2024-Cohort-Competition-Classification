@@ -1,0 +1,223 @@
+---
+title: "Classification Prediction Problem"
+subtitle: "Data Science 3 with R (STAT 301-3)"
+author: "Hannah Li"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    embed-resources: true
+    code-fold: show
+    link-external-newwindow: true
+    
+execute:
+  warning: false
+  
+from: markdown+emoji
+
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon="false"}
+## Github Repo Link
+
+<https://github.com/stat301-3-2024-spring/classification-pred-prob-hannahs-li>
+:::
+
+```{r}
+#| label: load data and packages 
+#| echo: false
+
+# load packages 
+library(tidyverse)
+library(here)
+library(kableExtra)
+library(patchwork)
+
+# load data 
+load(here("data/train.rda"))
+load(here("data/test.rda"))
+
+```
+
+## Introduction
+For this quarter's classification prediction problem, the challenge was to predict Chicago Airbnb host status (specifically if they were a superhost or not) as of December 2023 based off of listing, host, and Airbnb characteristics. 
+
+This is really important and relevant to everyone, not just those involved in the Kaggle competition, because understanding factors that contribute to whether or not someone is a superhost provides key insights into hospitality and general perception for both hosts and guests. Generally speaking, being a superhost means higher expectations, and achieving this status can lead to more bookings and revenue on Airbnb. From the guest perspective, understanding the factors that influence superhost status will allow them to make informed decisions regarding their stay and Airbnb experience.  
+
+## Data Overview
+
+The data used in training these models were supplied by the Kaggle competition. 
+
+### Data Quality Check
+
+As noted in the table below, the original dataset was not conducive for predicting. Not only was there missingness in several variables (which were address in the recipe), but also there was also a `bathrooms_text` variable which specified the number of bathrooms and type which produced an error message in all recipes. As a result, I converted it to a numeric value by extracting the numeric input and then dividing it by 2 if the observation had "shared" in its description, as seen in my created variable `true_bathrooms`. 
+
+There were also special characters such as (percentages (%)) in `host_response_rate` and `host_acceptance_rate`. This also limited the efficacy and ability of prediction models so I removed these special characters and made these variables numeric. 
+
+With the exception of the `id` variable, I converted all character and logical variables into factor variables because factor variables are easier to work with and R-Studio already treats logical variables as factor variables with two levels. 
+
+Furthermore, I also extracted the years, instead of specific dates, from all Date variables (`host_since`, `first_review`, `last_review`) because it minimzes noise from daily/monthly fluctuations, especially over a longer period of time as seen in our dataset (2008-2023). 
+
+Furthermore, there were a couple of extreme outliers—so much so they surpassed the digit limit of my computer and were all 2147483647 or 547979424—in `minimum_maximum_nights`, `maximum_maximum_nights`, `maximum_nights_avg_ntm`. As a result, I just made them the maximum values in the test dataset given the fact there were only 5 observations.
+
+All the changes to the original dataset are seen in the skim of the cleaned train dataset below. These changes were also made to the test dataset as well.  
+
+```{r}
+#| label: data quality check 
+#| echo: false
+#| tbl-cap: Skimr Summary of All Variables
+skimr::skim_without_charts(train) |> 
+  knitr::kable(title = "Skimr Summary of All Variables") |> 
+  scroll_box(height = "500px", width = "700px")
+```
+
+### Inspecting the Target Variable (`host_is_superhost`)
+
+```{r}
+#| label: target variable inspection
+#| echo: false 
+
+load(here("figures_tables/host_distribution.rda"))
+host_distribution + 
+  theme_minimal() + 
+  xlab("Is the Airbnb Host a Superhost?") + 
+  ylab("Count") + 
+  labs(title = "Distribution of Target Variable (`host_is_superhost`)")
+
+```
+
+There was no missingness in the target variable `host_is_superhost`, and while it is not completely balanced as it there are more normal hosts than there are superhosts (2793: 2184), the difference is very minimal, not requiring up- or down-sampling. 
+
+## Final Models Selection 
+
+### Selection Process
+
+My first selected model was chosen based off the highest ROC_AUC. Not only was this metric used in evaluating model performance in the Kaggle competition, but also because it indicates the model's ability to distinguish between the two classes (superhost or not) across different threshold values. As a result, a higher ROC_AUC is more desirable because it indicates that the model is more likely to correctly classify outcomes.
+
+[Best Performing Models Based on Metrics Table](#metrics-table) shows each model's ROC_AUC from best to worst. When predicting new data with the testing data set, the worst model is the Logistic Regression with the kitchen sink recipe with a ROC_AUC of 0.86098, while my best model, a Light GBM Boosted Tree with a feature engineered recipe, had an ROC_AUC of 0.96238. 
+
+```{r}
+#| label: metrics-table 
+#| echo: false 
+
+load(here("figures_tables/table_all_metrics.rda"))
+table_all_metrics
+```
+
+I selected my SVM RBF model with the same feature engineering recipe as my second model. Even though it may not had performed as well as this my Light GBM Boosted Tree on the dataset, it is more generalizable and has a much lower chance of being overfitted to this specific data set while still having a pretty good ROC_AUC value. 
+
+## Methods
+
+### Overview
+I use stratified resampling to fold my `train` dataset, using the target variable as the strata. This also helped me tune my models to select optimal hyperparameters and recipe modifications. 
+
+### `train` Data Splitting and Folding
+I folded the `train` data set using a v-fold cross validation with 5 folds and 3 repeats to fit/tune/train each model 15 times, using the target variable (`host_is_superhost`) to ensure the distribution of the variable is similar in all of the datasets.
+
+### Recipe 
+Both models used the same feature engineering recipe, which primarily handled novel levels, missingness, and created interaction terms between similiar variables (some of which had joint missingness). It also removed irrelevant variables (`id`, variables with near-zero variance, and normalized numeric variables to follow a normal distribution). The annotations in the recipe below shows a general overview of each step while the section below provides a more detailed overview and reasoning of each step. 
+
+
+```{r}
+#| label: fe recipe 
+#| eval: false 
+
+recipe_fe <- recipe(host_is_superhost ~., data = train) |> 
+  step_rm(id) |> 
+  # adjust for novel levels found in the following variables: 
+  step_novel(neighbourhood_cleansed) |> 
+  step_novel(host_neighbourhood) |> 
+  step_novel(host_location) |> 
+  # created interaction terms between the first and last review 
+  step_interact(~first_review:last_review) |> 
+  # created interaction terms between the all the review scores   
+  step_interact(~review_scores_rating:
+                  reviews_per_month:
+                  review_scores_accuracy: 
+                  review_scores_cleanliness: 
+                  review_scores_checkin: 
+                  review_scores_communication: 
+                  review_scores_location: 
+                  review_scores_value
+                ) |> 
+  # deal with missingnessness 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>
+  # prevent overfitting of the training data 
+  step_other(threshold = 0.05) |>
+  # dummied categorical variables  
+  step_dummy(all_nominal_predictors()) |>
+  # removed predictors with near-zero variance/little to none variation 
+  step_nzv(all_numeric_predictors()) |>
+  # standarize and ensure all numeric predictors follow a normal distribution 
+  step_normalize(all_numeric_predictors())
+
+```
+
+`step_rm`: removed `id` variable because it was irrelevent towards actually predicting the target variable.  
+
+`step_novel`: adjusted for the novel levels found in `neighbourhood_cleansed`, `host_neighbourhood`, and `host_location`. 
+
+`step_interact` of `first_review` and `last_review` variables: I also created interaction terms between `first_review` and `last_review` because the timing of the first and last review could indicate how the perceived and actual property value shifted over time, which is crucial to both understanding and predicting our target variable.  
+
+`step_interact` of review scores variables: I created interaction terms between the all the review scores because they all had joint missingness. Also, guests might rate different aspects of their experience—accuracy, cleanliness, communication, check-in, location, value, location—alongside other factors like timing (`review_scores_month`) that influences their overall perception of their Airbnb experience. As a result, we need to examine how these variables individually and collectively influence perception of an Airbnb's value and their subsequent prices. 
+
+`step_impute_mode` & `step_impute_mean`: There was missingness in the data, so I dealt with it by imputing the median of all numeric predictors and the mode of all nominal predictors. I chose this way over just removing all the NA values to avoid losing potentially valuable insights, especially if the missingness is not completely random, and to maximize the utility of the dataset. 
+
+`step_other`: To prevent overfitting of the data, I put the nominal predictors that occured less than 5% of the time into a new level ("Other").  
+
+`step_dummy`, `step_nzv`, & `step_normalize`: Finally, I prepped the data for my model: dummying my categorical variables, removing predictors  with near-zero variance/little to none variation because they would be unhelpful for modeling, and normalizing my numeric variables to follow a normal distribution. 
+
+### Model Details & Their Optimal Parameters 
+
+#### Boosted Tree (LGBM)
+Light GBM boosted trees create an prediction ensemble using decision trees, where each tree is influenced by the results of previous trees.  
+
+In the figure below, the effect of changing the mtry, min_n, tree_depth, and lean_rate hyperparameters on ROC_AUC are shown below. Generally higher number of randomly selected predictors (mtry) seems to be generally favorable across all min_n, learning rates, and tree depth. Smaller min_n (minimal node sizes) also seem to be preferable; however, the opposite is true for tree_depth as reflected in the fluctuations to ROC_AUC values. 
+
+```{r}
+#| label: lbt params figure 
+#| echo: false 
+
+load(here("figures_tables/parameters_lbt.rda"))
+parameters_lbt
+```
+
+The table below shows the parameters of my best performing Light GBM model, in which mtry is 18, min_n is 2, tree_depth is 7, and the learning rate is 0.0372759. 
+
+
+```{r}
+#| label: lbt params table 
+#| echo: false 
+
+load(here("figures_tables/table_lbt_parameters.rda"))
+table_lbt_parameters
+```
+
+#### SVM Poly 
+
+Support Vector Machines with polynomial kernels (SVM Poly models) predict data by maximizing the width of class margin using a polynomial class boundary. 
+
+The table below shows the parameters of my best performing SVM Poly model, in which cost is 2.763, degree is 2, and scale_factor is 0.016. 
+
+```{r}
+#| label: svm poly params table
+#| echo: false 
+
+load(here("figures_tables/table_svmp_parameters.rda"))
+table_svmp_parameters
+```
+
+## Conclusion
+In conclusion, this analysis aimed to predict Chicago Airbnb host status, specifically identifying superhosts, based on various listing, host, and Airbnb characteristics. Through meticulous data preprocessing, model training, and evaluation, several key findings emerged.
+
+The selected models, Light GBM boosted trees and SVM with polynomial kernels (SVM Poly), were assessed based on their ROC_AUC scores, indicating their ability to distinguish between superhosts and non-superhosts. The Light GBM model outperformed the SVM Poly model in terms of ROC_AUC, showcasing its superior predictive capability. However, the SVM Poly model, despite its slightly lower performance, offers robustness and generalizability, making it a valuable alternative for analyzing other similar datasets/ 
+
+Insights gained from this analysis have significant implications for both hosts and guests on Airbnb. Hosts can leverage the identified factors contributing to superhost status to enhance their listings and services, ultimately improving their chances of achieving superhost status and attracting more bookings. Similarly, guests can utilize this information to make more informed decisions when selecting accommodations, ensuring a better Airbnb experience.
+
+Future research could definitely explore other cities and even other booking apps and hotels to futher understand booking platforms and hospitality ratings and expectations. 
+
